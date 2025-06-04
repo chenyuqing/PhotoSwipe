@@ -10,6 +10,7 @@ import Photos
 
 struct ContentView: View {
     @State private var viewModel = PhotoSwipeViewModel()
+    @State private var showingHistory = false
     
     var body: some View {
         NavigationStack {
@@ -41,20 +42,48 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        // 删除按钮
-                        if viewModel.markedPhotosCount > 0 {
-                            Button(action: viewModel.showDeleteConfirmation) {
-                                VStack {
-                                    Image(systemName: "trash")
+                        HStack(spacing: 12) {
+                            // 历史记录按钮
+                            Button {
+                                showingHistory = true
+                            } label: {
+                                HStack {
+                                    Image(systemName: "clock")
                                         .font(.title2)
-                                    Text("\(viewModel.markedPhotosCount)")
-                                        .fontWeight(.bold)
+                                    if viewModel.hasHistoryData {
+                                        let stats = viewModel.getHistoryStats()
+                                        Text("\(stats.markedCount)")
+                                            .font(.caption)
+                                            .fontWeight(.bold)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.orange)
+                                            .foregroundColor(.white)
+                                            .clipShape(Capsule())
+                                    }
                                 }
-                                .foregroundColor(.red)
+                                .foregroundColor(.blue)
                                 .padding()
                                 .background(Color.white)
                                 .cornerRadius(12)
                                 .shadow(radius: 2)
+                            }
+                            
+                            // 删除按钮
+                            if viewModel.markedPhotosCount > 0 {
+                                Button(action: viewModel.showDeleteConfirmation) {
+                                    VStack {
+                                        Image(systemName: "trash")
+                                            .font(.title2)
+                                        Text("\(viewModel.markedPhotosCount)")
+                                            .fontWeight(.bold)
+                                    }
+                                    .foregroundColor(.red)
+                                    .padding()
+                                    .background(Color.white)
+                                    .cornerRadius(12)
+                                    .shadow(radius: 2)
+                                }
                             }
                         }
                     }
@@ -143,6 +172,9 @@ struct ContentView: View {
                 Button("取消", role: .cancel) { }
             } message: {
                 Text("确定要删除 \(viewModel.markedPhotosCount) 张标记的照片吗？此操作无法撤销。")
+            }
+            .sheet(isPresented: $showingHistory) {
+                HistoryView(viewModel: viewModel)
             }
         }
     }
