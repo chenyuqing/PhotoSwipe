@@ -2,7 +2,7 @@
 //  PhotoSwipeApp.swift
 //  PhotoSwipe
 //
-//  Created by Developer on 2024/12/19.
+//  Created by Tim on 4/6/25.
 //
 
 import SwiftUI
