@@ -74,8 +74,8 @@ Dependencies/
 #
 # It is recommended to not store the screenshots in the git repo.
 # Instead, use fastlane to re-generate the screenshots whenever they are needed.
-# For more information about the approaches to storing screenshots, please see:
-# https://docs.fastlane.tools/actions/capture_screenshots/
+# For more information about the recommended setup visit:
+# https://docs.fastlane.tools/best-practices/source-control/#source-control
 
 fastlane/report.xml
 fastlane/Preview.html
