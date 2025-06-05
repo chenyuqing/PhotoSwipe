@@ -15,11 +15,8 @@ struct ContentView: View {
     @State private var showingDeleteConfirmation = false
     @State private var showingPermissionAlert = false
     @State private var showingSettings = false
+    @State private var isDarkMode = false
     @Environment(\.colorScheme) var colorScheme
-    
-    private var isDarkMode: Bool {
-        colorScheme == .dark
-    }
     
     var body: some View {
         NavigationStack {
@@ -28,7 +25,7 @@ struct ContentView: View {
                 (isDarkMode ? Color.black : Color.white)
                     .ignoresSafeArea()
                 
-                if viewModel.isLoading {
+                if viewModel.photoService.isLoading {
                     loadingView
                 } else if viewModel.photoService.photos.isEmpty {
                     emptyStateView
@@ -37,11 +34,6 @@ struct ContentView: View {
                 }
             }
             .navigationBarHidden(true)
-            .onAppear {
-                Task {
-                    await viewModel.loadPhotos()
-                }
-            }
             .sheet(isPresented: $showingMarkedPhotos) {
                 MarkedPhotosGridView(viewModel: viewModel)
             }
@@ -112,12 +104,10 @@ struct ContentView: View {
                     SwipeablePhotoCard(
                         photo: currentPhoto,
                         onSwipeLeft: {
-                            viewModel.markCurrentPhotoForDeletion()
-                            viewModel.moveToNextPhoto()
+                            viewModel.swipeLeft()
                         },
                         onSwipeRight: {
-                            viewModel.keepCurrentPhoto()
-                            viewModel.moveToNextPhoto()
+                            viewModel.swipeRight()
                         },
                         onTap: {
                             // 可以添加点击事件，比如显示照片详情
@@ -188,70 +178,63 @@ struct ContentView: View {
                     .padding(.top, 10)
                     
                     Spacer()
-                }
-                
-                // 底部控制按钮
-                VStack {
-                    Spacer()
                     
-                    HStack(spacing: 40) {
-                        // 删除按钮
-                        Button(action: {
-                            viewModel.markCurrentPhotoForDeletion()
-                            viewModel.moveToNextPhoto()
-                        }) {
-                            Image(systemName: "xmark")
-                                .font(.title)
-                                .foregroundColor(.white)
-                                .frame(width: 50, height: 50)
-                                .background(Color.red)
-                                .cornerRadius(25)
-                                .shadow(radius: 4)
+                    // 底部控制按钮 - 悬浮在图片上方
+                    if !viewModel.photoService.photos.isEmpty && !viewModel.photoService.isLoading {
+                        GeometryReader { geometry in
+                            HStack(spacing: 0) {
+                                // 删除按钮 - 位于屏幕宽度的1/4处
+                                Button(action: {
+                                    viewModel.swipeRight()
+                                }) {
+                                    Image(systemName: "xmark")
+                                        .font(.title)
+                                        .foregroundColor(.red)
+                                        .frame(width: 50, height: 50)
+                                        .background((isDarkMode ? Color.black : Color.white).opacity(0.9))
+                                        .cornerRadius(25)
+                                        .shadow(radius: 4)
+                                }
+                                .frame(width: geometry.size.width / 2)
+                                .offset(x: -geometry.size.width / 4)
+                                
+                                // 保留按钮 - 位于屏幕宽度的3/4处
+                                Button(action: {
+                                    viewModel.swipeLeft()
+                                }) {
+                                    Image(systemName: "heart")
+                                        .font(.title)
+                                        .foregroundColor(.green)
+                                        .frame(width: 50, height: 50)
+                                        .background((isDarkMode ? Color.black : Color.white).opacity(0.9))
+                                        .cornerRadius(25)
+                                        .shadow(radius: 4)
+                                }
+                                .frame(width: geometry.size.width / 2)
+                                .offset(x: geometry.size.width / 4)
+                            }
                         }
-                        
-                        // 跳过按钮
-                        Button(action: {
-                            viewModel.moveToNextPhoto()
-                        }) {
-                            Image(systemName: "arrow.right")
-                                .font(.title2)
-                                .foregroundColor(isDarkMode ? .white : .gray)
-                                .frame(width: 50, height: 50)
-                                .background((isDarkMode ? Color.black : Color.white).opacity(0.9))
-                                .cornerRadius(25)
-                                .shadow(radius: 4)
-                        }
-                        
- 
-                        
-                        // 保留按钮
-                        Button(action: {
-                            viewModel.keepCurrentPhoto()
-                            viewModel.moveToNextPhoto()
-                        }) {
-                            Image(systemName: "heart.fill")
-                                .font(.title)
-                                .foregroundColor(.white)
-                                .frame(width: 50, height: 50)
-                                .background(Color.green)
-                                .cornerRadius(25)
-                                .shadow(radius: 4)
-                        }
+                        .frame(height: 50)
+                        .padding(.bottom, 50)
                     }
-                    .padding(.bottom, 50)
                 }
+            }
+            .onAppear {
+                // 根据系统设置初始化夜间模式
+                isDarkMode = (colorScheme == .dark)
                 
-                // 删除确认浮层
-                if viewModel.isDeleting {
-                    Color.black.opacity(0.5)
-                        .ignoresSafeArea()
-                    
-                    VStack(spacing: 20) {
-                        ProgressView()
-                            .scaleEffect(1.5)
-                        Text("正在删除照片...")
-                            .foregroundColor(.white)
-                    }
+                Task {
+                    await viewModel.requestPermissionAndLoadPhotos()
+                }
+            }
+            .onChange(of: colorScheme) { _, newValue in
+                // 跟随系统主题变化
+                isDarkMode = (newValue == .dark)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                // 应用从后台恢复时，重新检查当前照片状态
+                Task {
+                    await viewModel.refreshCurrentPhoto()
                 }
             }
         }
