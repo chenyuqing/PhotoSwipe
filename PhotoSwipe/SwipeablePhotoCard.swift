@@ -28,9 +28,8 @@ struct SwipeablePhotoCard: View {
                 if let image = photo.displayImage {
                     Image(uiImage: image)
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
+                        .aspectRatio(contentMode: .fit)
                         .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
                 } else {
                     // 显示加载状态
                     ZStack {
@@ -131,6 +130,15 @@ struct SwipeablePhotoCard: View {
                 
                 // 然后异步加载高质量图片
                 if photo.image == nil {
+                    await photo.loadImage()
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            // 应用从后台恢复时，强制刷新当前图片
+            Task {
+                if photo.displayImage == nil {
+                    await photo.loadThumbnail()
                     await photo.loadImage()
                 }
             }

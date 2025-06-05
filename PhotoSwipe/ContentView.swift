@@ -217,6 +217,15 @@ struct ContentView: View {
                 // 跟随系统主题变化
                 isDarkMode = (newValue == .dark)
             }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                // 应用从后台恢复时，重新检查当前照片状态
+                Task {
+                    if let currentPhoto = viewModel.currentPhoto, currentPhoto.displayImage == nil {
+                        await currentPhoto.loadThumbnail()
+                        await currentPhoto.loadImage()
+                    }
+                }
+            }
             .alert("需要相册权限", isPresented: $viewModel.showingPermissionAlert) {
                 Button("去设置") {
                     if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
@@ -225,9 +234,9 @@ struct ContentView: View {
                 }
                 Button("取消", role: .cancel) { }
             } message: {
-                Text("请在设置中允许访问照片，以便使用照片整理功能。")
+                Text("请在设置中允许访问照片，以便使用此功能。")
             }
-            .alert("确认删除", isPresented: $viewModel.showingDeleteAlert) {
+            .alert("删除照片", isPresented: $viewModel.showingDeleteConfirmation) {
                 Button("删除", role: .destructive) {
                     Task {
                         await viewModel.deleteMarkedPhotos()
@@ -235,25 +244,13 @@ struct ContentView: View {
                 }
                 Button("取消", role: .cancel) { }
             } message: {
-                Text("确定要删除 \(viewModel.markedPhotosCount) 张标记的照片吗？此操作不可撤销。")
+                Text("确定要删除 \(viewModel.markedPhotosCount) 张标记的照片吗？此操作无法撤销。")
             }
             .sheet(isPresented: $showingMarkedPhotosGrid) {
-                PhotoGridView(
-                    photos: viewModel.markedPhotos,
-                    title: "待删除照片 (\(viewModel.markedPhotosCount))",
-                    onRemove: { photo in
-                        viewModel.removeMarkFromPhoto(photo)
-                    }
-                )
+                MarkedPhotosGridView(viewModel: viewModel)
             }
             .sheet(isPresented: $showingKeptPhotosGrid) {
-                PhotoGridView(
-                    photos: viewModel.keptPhotos,
-                    title: "保留照片 (\(viewModel.keptPhotosCount))",
-                    onRemove: { photo in
-                        viewModel.removeKeepFromPhoto(photo)
-                    }
-                )
+                KeptPhotosGridView(viewModel: viewModel)
             }
         }
     }
