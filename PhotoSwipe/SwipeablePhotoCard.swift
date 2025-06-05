@@ -15,129 +15,138 @@ struct SwipeablePhotoCard: View {
     
     @State private var offset = CGSize.zero
     @State private var rotation: Double = 0
-    @State private var scale: CGFloat = 0.9
-    @State private var opacity: Double = 0
     
     private let swipeThreshold: CGFloat = 100
     
     var body: some View {
-        ZStack {
-            // 卡片背景
-            RoundedRectangle(cornerRadius: 20)
-                .fill(Color.white)
-                .shadow(radius: 10)
-            
-            // 照片内容
-            if let image = photo.image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 300, height: 450)
-                    .clipShape(RoundedRectangle(cornerRadius: 15))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 15)
-                            .stroke(Color.white, lineWidth: 5)
-                    )
-            } else {
-                // 加载中占位符
-                RoundedRectangle(cornerRadius: 15)
-                    .fill(Color.gray.opacity(0.3))
-                    .frame(width: 300, height: 450)
-                    .overlay(
-                        ProgressView()
-                            .scaleEffect(1.5)
-                    )
-            }
-            
-            // 喜欢/不喜欢指示器
-            VStack {
-                if offset.width > 50 {
-                    Text("不喜欢")
-                        .font(.title)
-                        .fontWeight(.bold)
-                        .padding(10)
-                        .foregroundColor(.white)
-                        .background(Color.red)
-                        .cornerRadius(10)
-                        .rotationEffect(.degrees(-10))
-                        .opacity(Double(min(abs(offset.width), 100)) / 100)
-                } else if offset.width < -50 {
-                    Text("喜欢")
-                        .font(.title)
-                        .fontWeight(.bold)
-                        .padding(10)
-                        .foregroundColor(.white)
-                        .background(Color.green)
-                        .cornerRadius(10)
-                        .rotationEffect(.degrees(10))
-                        .opacity(Double(min(abs(offset.width), 100)) / 100)
-                }
+        GeometryReader { geometry in
+            ZStack {
+                RoundedRectangle(cornerRadius: 0)
+                    .fill(Color.gray.opacity(0.1))
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                 
-                Spacer()
-                
-                // 删除标记指示器
-                if photo.isMarkedForDeletion {
-                    Text("已标记删除")
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .padding(8)
-                        .foregroundColor(.white)
-                        .background(Color.red)
-                        .cornerRadius(8)
-                        .padding(.bottom, 10)
+                if let image = photo.displayImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                } else {
+                    // 显示加载状态
+                    ZStack {
+                        Color.gray.opacity(0.2)
+                        VStack {
+                            ProgressView()
+                                .scaleEffect(1.2)
+                            Text("加载中...")
+                                .font(.caption)
+                                .foregroundColor(.gray)
+                                .padding(.top, 8)
+                        }
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                 }
-            }
-            .padding()
-        }
-        .frame(width: 320, height: 480)
-        .offset(offset)
-        .rotationEffect(.degrees(rotation))
-        .scaleEffect(scale)
-        .opacity(1 - opacity)
-        .gesture(
-            DragGesture()
-                .onChanged { gesture in
-                    offset = gesture.translation
-                    rotation = Double(gesture.translation.width / 20)
-                    scale = 0.9 + min(abs(Double(gesture.translation.width) / 1000), 0.1)
-                }
-                .onEnded { gesture in
-                    if abs(gesture.translation.width) > swipeThreshold {
-                        // 完成滑动手势
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            offset.width = gesture.translation.width > 0 ? 500 : -500
-                            rotation = gesture.translation.width > 0 ? 15 : -15
-                            opacity = 1.0
+            
+                // 滑动指示器
+                VStack {
+                    HStack {
+                        // 左滑指示器（喜欢）
+                        if offset.width > 50 {
+                            Text("❤️ 喜欢")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .foregroundColor(.green)
+                                .padding()
+                                .background(Color.white.opacity(0.9))
+                                .cornerRadius(10)
+                                .opacity(Double(offset.width / 100))
                         }
                         
-                        // 延迟执行回调，等待动画完成
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            if gesture.translation.width > 0 {
-                                onSwipeRight()
-                            } else {
-                                onSwipeLeft()
-                            }
-                            
-                            // 重置状态
-                            offset = .zero
-                            rotation = 0
-                            scale = 0.9
-                            opacity = 0
+                        Spacer()
+                        
+                        // 右滑指示器（不喜欢）
+                        if offset.width < -50 {
+                            Text("❌ 不喜欢")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .foregroundColor(.red)
+                                .padding()
+                                .background(Color.white.opacity(0.9))
+                                .cornerRadius(10)
+                                .opacity(Double(-offset.width / 100))
+                        }
+                    }
+                    Spacer()
+                }
+                .padding()
+            }
+            .offset(offset)
+            .rotationEffect(.degrees(rotation))
+        }
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    offset = value.translation
+                    rotation = Double(value.translation.width / 10)
+                }
+                .onEnded { value in
+                    let swipeDistance = value.translation.width
+                    
+                    if swipeDistance > swipeThreshold {
+                        // 左滑（喜欢）
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            offset = CGSize(width: 500, height: 0)
+                            rotation = 20
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            onSwipeLeft()
+                            resetCard()
+                        }
+                    } else if swipeDistance < -swipeThreshold {
+                        // 右滑（不喜欢）
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            offset = CGSize(width: -500, height: 0)
+                            rotation = -20
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            onSwipeRight()
+                            resetCard()
                         }
                     } else {
-                        // 未达到滑动阈值，恢复原位
-                        withAnimation {
+                        // 回弹
+                        withAnimation(.spring()) {
                             offset = .zero
                             rotation = 0
-                            scale = 0.9
                         }
                     }
                 }
         )
         .onAppear {
-            withAnimation(.spring()) {
-                scale = 1.0
+            // 优化的图片加载策略
+            Task {
+                // 总是尝试加载缩略图（如果没有的话）
+                if photo.thumbnail == nil {
+                    await photo.loadThumbnail()
+                }
+                
+                // 然后异步加载高质量图片
+                if photo.image == nil {
+                    await photo.loadImage()
+                }
             }
         }
     }
+    
+    private func resetCard() {
+        offset = .zero
+        rotation = 0
+    }
+}
+
+#Preview {
+    SwipeablePhotoCard(
+        photo: PhotoModel(asset: PHAsset()),
+        onSwipeLeft: {},
+        onSwipeRight: {}
+    )
 }
