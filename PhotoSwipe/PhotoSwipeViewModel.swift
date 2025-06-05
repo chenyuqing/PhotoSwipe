@@ -8,282 +8,260 @@
 import SwiftUI
 import Photos
 
-@MainActor
-class PhotoSwipeViewModel: ObservableObject {
-    @Published var photoService = PhotoService()
-    @Published var currentPhotoIndex = 0
-    @Published var isLoading = false
-    @Published var isDeleting = false
+@Observable
+class PhotoSwipeViewModel {
+    var photoService = PhotoService()
+    var currentPhotoIndex = 0
+    var showingPermissionAlert = false
+    var showingDeleteConfirmation = false
     
     var currentPhoto: PhotoModel? {
-        guard currentPhotoIndex < photoService.photos.count else { return nil }
+        guard !photoService.photos.isEmpty,
+              currentPhotoIndex >= 0,
+              currentPhotoIndex < photoService.photos.count else {
+            return nil
+        }
         return photoService.photos[currentPhotoIndex]
     }
     
+    /// 获取标记删除的照片数量
     var markedPhotosCount: Int {
-        photoService.photos.filter { $0.isMarkedForDeletion }.count
+        return photoService.photos.filter { $0.isMarkedForDeletion }.count
+    }
+    
+    /// 获取保留照片数量
+    var keptPhotosCount: Int {
+        return HistoryManager.shared.getKeptPhotos().count
+    }
+    
+    /// 获取已处理照片数量（标记删除 + 保留）
+    var processedPhotosCount: Int {
+        return photoService.photos.filter { $0.isMarkedForDeletion || $0.isMarkedForKeeping }.count
     }
     
     init() {
-        // 恢复上次的浏览位置
-        let (savedIndex, savedTotalCount) = HistoryManager.shared.getSavedPosition()
-        if savedTotalCount > 0 {
-            currentPhotoIndex = min(savedIndex, savedTotalCount - 1)
+        // 初始化时恢复上次浏览位置
+        if let savedIndex = HistoryManager.shared.getCurrentPhotoIndex() {
+            currentPhotoIndex = savedIndex
         }
     }
     
-    func loadPhotos() async {
-        isLoading = true
-        await photoService.loadPhotos()
+    @MainActor
+    func requestPermissionAndLoadPhotos() async {
+        let status = await photoService.requestPermission()
         
-        // 确保索引在有效范围内
-        if currentPhotoIndex >= photoService.photos.count {
-            currentPhotoIndex = max(0, photoService.photos.count - 1)
-        }
-        
-        // 应用历史标记
-        applyHistoryMarks()
-        
-        isLoading = false
-    }
-    
-    private func applyHistoryMarks() {
-        let markedPhotos = HistoryManager.shared.getMarkedPhotos()
-        let keptPhotos = HistoryManager.shared.getKeptPhotos()
-        
-        for photo in photoService.photos {
-            if markedPhotos.contains(photo.asset.localIdentifier) {
-                photo.isMarkedForDeletion = true
+        switch status {
+        case .authorized, .limited:
+            await photoService.loadPhotos()
+            
+            // 加载完成后，移动到第一张未处理的照片
+            moveToFirstUnprocessedPhoto()
+            
+            // 预加载当前照片
+            if let currentPhoto = currentPhoto {
+                await currentPhoto.loadThumbnail()
+                await currentPhoto.loadImage()
             }
-            if keptPhotos.contains(photo.asset.localIdentifier) {
-                photo.isKept = true
-            }
+            
+        case .denied, .restricted:
+            showingPermissionAlert = true
+            
+        case .notDetermined:
+            break
+            
+        @unknown default:
+            break
         }
     }
     
-    func moveToNextPhoto() {
+    /// 移动到第一张未处理的照片（既未删除也未保留）
+    private func moveToFirstUnprocessedPhoto() {
         guard !photoService.photos.isEmpty else { return }
         
-        // 保存当前位置
-        HistoryManager.shared.saveCurrentPosition(currentPhotoIndex, totalCount: photoService.photos.count)
+        // 从当前位置开始查找第一张未处理的照片
+        for i in currentPhotoIndex..<photoService.photos.count {
+            let photo = photoService.photos[i]
+            if !photo.isMarkedForDeletion && !photo.isMarkedForKeeping {
+                currentPhotoIndex = i
+                HistoryManager.shared.saveCurrentPhotoIndex(currentPhotoIndex)
+                return
+            }
+        }
         
-        if currentPhotoIndex < photoService.photos.count - 1 {
-            currentPhotoIndex += 1
-        } else {
-            // 到达最后一张，可以选择循环或停留
-            currentPhotoIndex = 0
+        // 如果从当前位置到末尾都没有未处理的照片，从头开始查找
+        for i in 0..<currentPhotoIndex {
+            let photo = photoService.photos[i]
+            if !photo.isMarkedForDeletion && !photo.isMarkedForKeeping {
+                currentPhotoIndex = i
+                HistoryManager.shared.saveCurrentPhotoIndex(currentPhotoIndex)
+                return
+            }
+        }
+    }
+    
+    func swipeLeft() {
+        // 左滑表示"保留"，标记为保留
+        if let currentPhoto = currentPhoto {
+            currentPhoto.isMarkedForKeeping = true
+        }
+        moveToNextPhoto()
+    }
+    
+    func swipeRight() {
+        // 右滑表示"删除"，标记为待删除
+        if let currentPhoto = currentPhoto {
+            currentPhoto.isMarkedForDeletion = true
+        }
+        moveToNextPhoto()
+    }
+    
+    private func moveToNextPhoto() {
+        guard !photoService.photos.isEmpty else { return }
+        
+        // 直接移动到下一张照片，不跳过任何照片
+        currentPhotoIndex = (currentPhotoIndex + 1) % photoService.photos.count
+        
+        // 保存当前位置
+        HistoryManager.shared.saveCurrentPhotoIndex(currentPhotoIndex)
+        
+        // 预加载新的当前照片
+        if let newCurrentPhoto = currentPhoto {
+            Task {
+                await newCurrentPhoto.loadThumbnail()
+                await newCurrentPhoto.loadImage()
+            }
         }
     }
     
     func moveToPreviousPhoto() {
         guard !photoService.photos.isEmpty else { return }
         
-        if currentPhotoIndex > 0 {
-            currentPhotoIndex -= 1
-        } else {
-            currentPhotoIndex = photoService.photos.count - 1
-        }
+        // 直接移动到上一张照片，不跳过任何照片
+        currentPhotoIndex = currentPhotoIndex > 0 ? currentPhotoIndex - 1 : photoService.photos.count - 1
         
         // 保存当前位置
-        HistoryManager.shared.saveCurrentPosition(currentPhotoIndex, totalCount: photoService.photos.count)
-    }
-    
-    func markCurrentPhotoForDeletion() {
-        guard let photo = currentPhoto else { return }
-        photo.isMarkedForDeletion = true
-        photo.isKept = false // 取消保留状态
+        HistoryManager.shared.saveCurrentPhotoIndex(currentPhotoIndex)
         
-        // 保存到历史记录
-        HistoryManager.shared.saveMarkedPhoto(photo.asset.localIdentifier)
-        // 从保留记录中移除
-        HistoryManager.shared.removeKeptPhoto(photo.asset.localIdentifier)
-    }
-    
-    func keepCurrentPhoto() {
-        guard let photo = currentPhoto else { return }
-        photo.isKept = true
-        photo.isMarkedForDeletion = false // 取消删除标记
-        
-        // 保存到保留记录
-        HistoryManager.shared.saveKeptPhoto(photo.asset.localIdentifier)
-        // 从删除标记中移除
-        HistoryManager.shared.removeMarkForDeletion(photoId: photo.asset.localIdentifier)
-    }
-    
-    func toggleCurrentPhotoMark() {
-        guard let photo = currentPhoto else { return }
-        
-        if photo.isMarkedForDeletion {
-            photo.isMarkedForDeletion = false
-            HistoryManager.shared.removeMarkForDeletion(photoId: photo.asset.localIdentifier)
-        } else {
-            photo.isMarkedForDeletion = true
-            photo.isKept = false
-            HistoryManager.shared.saveMarkedPhoto(photo.asset.localIdentifier)
-            HistoryManager.shared.removeKeptPhoto(photo.asset.localIdentifier)
-        }
-    }
-    
-    func unmarkCurrentPhoto() {
-        guard let photo = currentPhoto else { return }
-        photo.isMarkedForDeletion = false
-        HistoryManager.shared.removeMarkForDeletion(photoId: photo.asset.localIdentifier)
-    }
-    
-    func getCurrentPhotoInfo() -> String {
-        guard let photo = currentPhoto else { return "" }
-        
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        
-        var info = ""
-        if let creationDate = photo.asset.creationDate {
-            info += "拍摄时间: \(formatter.string(from: creationDate))\n"
-        }
-        
-        let size = CGSize(width: photo.asset.pixelWidth, height: photo.asset.pixelHeight)
-        info += "尺寸: \(Int(size.width)) × \(Int(size.height))\n"
-        
-        if let location = photo.asset.location {
-            info += "位置: \(location.coordinate.latitude), \(location.coordinate.longitude)\n"
-        }
-        
-        return info
-    }
-    
-    func jumpToPhoto(at index: Int) {
-        guard index >= 0 && index < photoService.photos.count else { return }
-        currentPhotoIndex = index
-        
-        // 保存当前位置
-        HistoryManager.shared.saveCurrentPosition(currentPhotoIndex, totalCount: photoService.photos.count)
-    }
-    
-    func getPhotoProgress() -> Float {
-        guard !photoService.photos.isEmpty else { return 0 }
-        return Float(currentPhotoIndex + 1) / Float(photoService.photos.count)
-    }
-    
-    func hasNextPhoto() -> Bool {
-        return currentPhotoIndex < photoService.photos.count - 1
-    }
-    
-    func hasPreviousPhoto() -> Bool {
-        return currentPhotoIndex > 0
-    }
-    
-    
-    
-    @MainActor
-    func deleteMarkedPhotos() async {
-        isDeleting = true
-        await photoService.deleteMarkedPhotos()
-        // 重置当前索引如果超出范围
-        if currentPhotoIndex >= photoService.photos.count {
-            currentPhotoIndex = max(0, photoService.photos.count - 1)
-        }
-        isDeleting = false
-    }
-    
-    /// 删除指定的照片列表
-    func deleteSpecificPhotos(_ photosToDelete: [PhotoModel]) async {
-        isDeleting = true
-        
-        // 收集要删除的照片标识符
-        let photoIdentifiers = photosToDelete.map { $0.asset.localIdentifier }
-        
-        // 从照片服务中删除
-        await photoService.deleteSpecificPhotos(photosToDelete)
-        
-        // 保存到删除历史
-        HistoryManager.shared.saveDeletedPhotos(photoIdentifiers)
-        
-        // 重置当前索引如果超出范围
-        if currentPhotoIndex >= photoService.photos.count {
-            currentPhotoIndex = max(0, photoService.photos.count - 1)
-        }
-        
-        isDeleting = false
-    }
-    
-    /// 获取统计信息
-    func getStats() -> (total: Int, marked: Int, kept: Int, remaining: Int) {
-        let total = photoService.photos.count
-        let marked = photoService.photos.filter { $0.isMarkedForDeletion }.count
-        let kept = photoService.photos.filter { $0.isKept }.count
-        let remaining = total - marked - kept
-        
-        return (total: total, marked: marked, kept: kept, remaining: remaining)
-    }
-    
-    /// 重置所有标记
-    func resetAllMarks() {
-        for photo in photoService.photos {
-            photo.isMarkedForDeletion = false
-            photo.isKept = false
-        }
-        HistoryManager.shared.clearAllRecords()
-    }
-    
-    /// 获取当前照片的详细信息
-    func getCurrentPhotoDetails() -> PhotoDetails? {
-        guard let photo = currentPhoto else { return nil }
-        
-        return PhotoDetails(
-            asset: photo.asset,
-            isMarked: photo.isMarkedForDeletion,
-            isKept: photo.isKept,
-            index: currentPhotoIndex,
-            total: photoService.photos.count
-        )
-    }
-    
-    /// 批量标记照片
-    func markPhotos(_ photoIdentifiers: [String], forDeletion: Bool) {
-        for identifier in photoIdentifiers {
-            if let photo = photoService.photos.first(where: { $0.asset.localIdentifier == identifier }) {
-                if forDeletion {
-                    photo.isMarkedForDeletion = true
-                    photo.isKept = false
-                    HistoryManager.shared.saveMarkedPhoto(identifier)
-                    HistoryManager.shared.removeKeptPhoto(identifier)
-                } else {
-                    photo.isKept = true
-                    photo.isMarkedForDeletion = false
-                    HistoryManager.shared.saveKeptPhoto(identifier)
-                    HistoryManager.shared.removeMarkForDeletion(photoId: identifier)
-                }
+        // 预加载新的当前照片
+        if let newCurrentPhoto = currentPhoto {
+            Task {
+                await newCurrentPhoto.loadThumbnail()
+                await newCurrentPhoto.loadImage()
             }
         }
     }
-}
-
-/// 照片详细信息结构
-struct PhotoDetails {
-    let asset: PHAsset
-    let isMarked: Bool
-    let isKept: Bool
-    let index: Int
-    let total: Int
     
-    var creationDate: Date? {
-        asset.creationDate
+    @MainActor
+    func deleteMarkedPhotos() async {
+        let markedPhotos = photoService.photos.filter { $0.isMarkedForDeletion }
+        
+        guard !markedPhotos.isEmpty else { return }
+        
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                let assetsToDelete = markedPhotos.map { $0.asset }
+                PHAssetChangeRequest.deleteAssets(assetsToDelete as NSArray)
+            }
+            
+            // 删除成功后，从本地数组中移除这些照片
+            photoService.photos.removeAll { photo in
+                markedPhotos.contains { $0.id == photo.id }
+            }
+            
+            // 清除历史记录中对应的标记
+            for photo in markedPhotos {
+                HistoryManager.shared.removeMarkedPhoto(photo.asset.localIdentifier)
+                HistoryManager.shared.addDeletedPhoto(photo.asset.localIdentifier)
+            }
+            
+            // 调整当前照片索引
+            if currentPhotoIndex >= photoService.photos.count {
+                currentPhotoIndex = max(0, photoService.photos.count - 1)
+            }
+            
+            // 移动到第一张未处理的照片
+            moveToFirstUnprocessedPhoto()
+            
+        } catch {
+            print("删除照片失败: \(error)")
+        }
     }
     
-    var location: CLLocation? {
-        asset.location
+    func confirmDeleteMarkedPhotos() {
+        showingDeleteConfirmation = true
     }
     
-    var dimensions: CGSize {
-        CGSize(width: asset.pixelWidth, height: asset.pixelHeight)
+    /// 获取扩展的历史统计信息
+    func getExtendedHistoryStats() -> (markedCount: Int, deletedCount: Int, keptCount: Int) {
+        return HistoryManager.shared.getExtendedHistoryStats()
     }
     
-    var mediaType: PHAssetMediaType {
-        asset.mediaType
+    /// 清除所有历史记录
+    func clearAllHistory() {
+        HistoryManager.shared.clearAllHistory()
+        
+        // 重新加载照片状态
+        Task {
+            await requestPermissionAndLoadPhotos()
+        }
     }
     
-    var duration: TimeInterval {
-        asset.duration
+    /// 清除所有记录（包括保留记录和位置）
+    func clearAllRecords() {
+        HistoryManager.shared.clearAllRecords()
+    }
+    
+    /// 检查是否有历史记录
+    func hasHistory() -> Bool {
+        let stats = HistoryManager.shared.getExtendedHistoryStats()
+        return stats.markedCount > 0 || stats.deletedCount > 0 || stats.keptCount > 0
+    }
+    
+    /// 获取保留的照片列表
+    func getKeptPhotos() -> [PhotoModel] {
+        return photoService.photos.filter { $0.isMarkedForKeeping }
+    }
+    
+    /// 重置照片的保留标记
+    func resetPhotoKeepingMark(_ photo: PhotoModel) {
+        photo.isMarkedForKeeping = false
+    }
+    
+    /// 批量重置照片的保留标记
+    func resetPhotosKeepingMark(_ photos: [PhotoModel]) {
+        for photo in photos {
+            photo.isMarkedForKeeping = false
+        }
+    }
+    
+    /// 获取标记删除的照片列表
+    func getMarkedPhotos() -> [PhotoModel] {
+        return photoService.photos.filter { $0.isMarkedForDeletion }
+    }
+    
+    /// 重置照片的删除标记
+    func resetPhotoMark(_ photo: PhotoModel) {
+        photo.isMarkedForDeletion = false
+    }
+    
+    /// 批量重置照片的删除标记
+    func resetPhotosMark(_ photos: [PhotoModel]) {
+        for photo in photos {
+            photo.isMarkedForDeletion = false
+        }
+    }
+    
+    /// 将照片标记为保留（从删除状态转换）
+    func markPhotoAsKept(_ photo: PhotoModel) {
+        photo.isMarkedForDeletion = false
+        photo.isMarkedForKeeping = true
+    }
+    
+    /// 批量将照片标记为保留
+    func markPhotosAsKept(_ photos: [PhotoModel]) {
+        for photo in photos {
+            photo.isMarkedForDeletion = false
+            photo.isMarkedForKeeping = true
+        }
     }
 }
