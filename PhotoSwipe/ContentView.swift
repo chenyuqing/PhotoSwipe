@@ -182,7 +182,7 @@ struct ContentView: View {
                     // 底部控制按钮 - 悬浮在图片上方
                     if !viewModel.photoService.photos.isEmpty && !viewModel.photoService.isLoading {
                         GeometryReader { geometry in
-                            HStack(spacing: 0) {
+                            ZStack {
                                 // 删除按钮 - 位于屏幕宽度的1/4处
                                 Button(action: {
                                     viewModel.swipeRight()
@@ -195,8 +195,7 @@ struct ContentView: View {
                                         .cornerRadius(25)
                                         .shadow(radius: 4)
                                 }
-                                .frame(width: geometry.size.width / 2)
-                                .offset(x: -geometry.size.width / 4)
+                                .position(x: geometry.size.width * 0.25, y: 25)
                                 
                                 // 保留按钮 - 位于屏幕宽度的3/4处
                                 Button(action: {
@@ -210,8 +209,7 @@ struct ContentView: View {
                                         .cornerRadius(25)
                                         .shadow(radius: 4)
                                 }
-                                .frame(width: geometry.size.width / 2)
-                                .offset(x: geometry.size.width / 4)
+                                .position(x: geometry.size.width * 0.75, y: 25)
                             }
                         }
                         .frame(height: 50)
