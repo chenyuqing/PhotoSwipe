@@ -2,39 +2,78 @@
 //  PhotoModel.swift
 //  PhotoSwipe
 //
-//  Created by Developer on 2024/12/19.
+//  Created by Tim on 4/6/25.
 //
 
-import Foundation
+import SwiftUI
 import Photos
-import UIKit
 
-/// 照片模型，符合 Identifiable 和 Observable 协议
 @Observable
 class PhotoModel: Identifiable {
     let id = UUID()
     let asset: PHAsset
+    
+    var thumbnail: UIImage?
     var image: UIImage?
-    var isMarkedForDeletion: Bool = false
-    var swipeOffset: CGFloat = 0
-    var rotation: Double = 0
+    var isMarkedForDeletion = false
+    var isKept = false
+    
+    // 用于显示的图片（优先使用高质量图片，否则使用缩略图）
+    var displayImage: UIImage? {
+        return image ?? thumbnail
+    }
     
     init(asset: PHAsset) {
         self.asset = asset
     }
-}
-
-/// 滑动方向枚举
-enum SwipeDirection {
-    case left   // 不喜欢
-    case right  // 喜欢
-    case none   // 无方向
-}
-
-/// 照片状态枚举
-enum PhotoStatus {
-    case normal
-    case liked
-    case disliked
-    case markedForDeletion
+    
+    @MainActor
+    func loadThumbnail() async {
+        guard thumbnail == nil else { return }
+        
+        let manager = PHImageManager.default()
+        let options = PHImageRequestOptions()
+        options.isSynchronous = false
+        options.deliveryMode = .fastFormat
+        options.resizeMode = .fast
+        
+        return await withCheckedContinuation { continuation in
+            manager.requestImage(
+                for: asset,
+                targetSize: CGSize(width: 300, height: 300),
+                contentMode: .aspectFill,
+                options: options
+            ) { [weak self] image, _ in
+                Task { @MainActor in
+                    self?.thumbnail = image
+                    continuation.resume()
+                }
+            }
+        }
+    }
+    
+    @MainActor
+    func loadImage() async {
+        guard image == nil else { return }
+        
+        let manager = PHImageManager.default()
+        let options = PHImageRequestOptions()
+        options.isSynchronous = false
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .exact
+        
+        return await withCheckedContinuation { continuation in
+            manager.requestImage(
+                for: asset,
+                targetSize: PHImageManagerMaximumSize,
+                contentMode: .aspectFill,
+                options: options
+            ) { [weak self] image, _ in
+                Task { @MainActor in
+                    self?.image = image
+                    continuation.resume()
+                }
+            }
+        }
+    }
 }

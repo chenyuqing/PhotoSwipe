@@ -5,90 +5,194 @@
 //  Created by Tim on 4/6/25.
 //
 
-import Foundation
-import Photos
 import SwiftUI
+import Photos
 
 @Observable
 class PhotoSwipeViewModel {
     let photoService = PhotoService()
-    var currentPhotoIndex: Int = 0
-    var showingPermissionAlert: Bool = false
-    var showingDeleteConfirmation: Bool = false
+    
+    var currentPhotoIndex = 0
+    var showingDeleteAlert = false
+    var showingPermissionAlert = false
     
     var currentPhoto: PhotoModel? {
-        guard !photoService.photos.isEmpty, currentPhotoIndex < photoService.photos.count else {
+        guard !photoService.photos.isEmpty,
+              currentPhotoIndex < photoService.photos.count else {
             return nil
         }
         return photoService.photos[currentPhotoIndex]
     }
     
+    var markedPhotos: [PhotoModel] {
+        photoService.photos.filter { $0.isMarkedForDeletion }
+    }
+    
+    var keptPhotos: [PhotoModel] {
+        photoService.photos.filter { $0.isKept }
+    }
+    
     var markedPhotosCount: Int {
-        return photoService.getMarkedPhotosCount()
+        markedPhotos.count
+    }
+    
+    var keptPhotosCount: Int {
+        keptPhotos.count
+    }
+    
+    var processedPhotosCount: Int {
+        markedPhotosCount + keptPhotosCount
+    }
+    
+    init() {
+        // 恢复保存的位置
+        restoreSavedPosition()
     }
     
     @MainActor
     func requestPermissionAndLoadPhotos() async {
-        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        let status = await photoService.requestPermission()
         
         switch status {
-        case .notDetermined:
-            await photoService.requestPhotoLibraryAccess()
-        case .restricted, .denied:
-            showingPermissionAlert = true
         case .authorized, .limited:
-            await photoService.requestPhotoLibraryAccess()
+            await photoService.loadPhotos()
+            // 加载完成后再次恢复位置（以防照片数量发生变化）
+            restoreSavedPosition()
+        case .denied, .restricted:
+            showingPermissionAlert = true
+        case .notDetermined:
+            break
         @unknown default:
-            await photoService.requestPhotoLibraryAccess()
+            break
         }
     }
     
     func swipeLeft() {
-        // 喜欢照片，不标记删除，移到下一张
+        guard let photo = currentPhoto else { return }
+        
+        // 标记为保留
+        photo.isKept = true
+        photo.isMarkedForDeletion = false
+        
+        // 记录到历史
+        HistoryManager.shared.addKeptPhoto(photo.asset.localIdentifier)
+        
         moveToNextPhoto()
     }
     
     func swipeRight() {
-        // 不喜欢照片，标记删除，移到下一张
-        if let currentPhoto = currentPhoto {
-            currentPhoto.isMarkedForDeletion = true
-        }
+        guard let photo = currentPhoto else { return }
+        
+        // 标记为删除
+        photo.isMarkedForDeletion = true
+        photo.isKept = false
+        
+        // 记录到历史
+        HistoryManager.shared.addDeletedPhoto(photo.asset.localIdentifier)
+        
         moveToNextPhoto()
     }
     
     func resetCurrentPhotoMark() {
-        // 撤销当前照片的标记
-        if let currentPhoto = currentPhoto {
-            currentPhoto.isMarkedForDeletion = false
-        }
+        guard let photo = currentPhoto else { return }
+        
+        // 清除标记
+        photo.isMarkedForDeletion = false
+        photo.isKept = false
+        
+        // 从历史记录中移除
+        HistoryManager.shared.removeFromHistory(photo.asset.localIdentifier)
     }
     
     private func moveToNextPhoto() {
-        // 预加载下一张图片
-        let nextIndex = currentPhotoIndex + 1
-        if nextIndex < photoService.photos.count {
-            Task {
-                await photoService.photos[nextIndex].loadImage()
-            }
-        }
-        
-        // 移动到下一张照片
         if currentPhotoIndex < photoService.photos.count - 1 {
             currentPhotoIndex += 1
+        } else {
+            // 已经是最后一张，重新开始
+            currentPhotoIndex = 0
         }
+        
+        // 保存当前位置
+        saveCurrentPosition()
     }
     
     func showDeleteConfirmation() {
-        showingDeleteConfirmation = true
+        showingDeleteAlert = true
     }
     
     @MainActor
     func deleteMarkedPhotos() async {
-        await photoService.deleteMarkedPhotos()
+        let photosToDelete = markedPhotos.map { $0.asset }
         
-        // 如果当前索引超出范围，重置为最后一张
-        if currentPhotoIndex >= photoService.photos.count && !photoService.photos.isEmpty {
-            currentPhotoIndex = photoService.photos.count - 1
+        do {
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.deleteAssets(photosToDelete as NSArray)
+            }
+            
+            // 删除成功后，从数组中移除这些照片
+            photoService.photos.removeAll { photo in
+                photosToDelete.contains(photo.asset)
+            }
+            
+            // 调整当前索引
+            if currentPhotoIndex >= photoService.photos.count {
+                currentPhotoIndex = max(0, photoService.photos.count - 1)
+            }
+            
+            // 保存位置
+            saveCurrentPosition()
+            
+        } catch {
+            print("删除照片失败: \(error)")
+        }
+    }
+    
+    func removeMarkFromPhoto(_ photo: PhotoModel) {
+        photo.isMarkedForDeletion = false
+        HistoryManager.shared.removeFromHistory(photo.asset.localIdentifier)
+    }
+    
+    func removeKeepFromPhoto(_ photo: PhotoModel) {
+        photo.isKept = false
+        HistoryManager.shared.removeFromHistory(photo.asset.localIdentifier)
+    }
+    
+    func clearAllMarks() {
+        for photo in photoService.photos {
+            photo.isMarkedForDeletion = false
+            photo.isKept = false
+        }
+    }
+    
+    func clearAllRecords() {
+        HistoryManager.shared.clearAllHistory()
+    }
+    
+    func hasHistory() -> Bool {
+        let stats = HistoryManager.shared.getHistoryStats()
+        return stats.deletedCount > 0 || stats.keptCount > 0
+    }
+    
+    func getExtendedHistoryStats() -> (deletedCount: Int, keptCount: Int) {
+        let stats = HistoryManager.shared.getHistoryStats()
+        return (deletedCount: stats.deletedCount, keptCount: stats.keptCount)
+    }
+    
+    // MARK: - 位置保存和恢复
+    
+    private func saveCurrentPosition() {
+        UserDefaults.standard.set(currentPhotoIndex, forKey: "currentPhotoIndex")
+        UserDefaults.standard.set(photoService.photos.count, forKey: "totalPhotosCount")
+    }
+    
+    private func restoreSavedPosition() {
+        let savedIndex = UserDefaults.standard.integer(forKey: "currentPhotoIndex")
+        
+        // 只要索引有效就恢复，不再要求照片总数完全匹配
+        if savedIndex >= 0 && savedIndex < photoService.photos.count {
+            currentPhotoIndex = savedIndex
+        } else {
+            currentPhotoIndex = 0
         }
     }
 }

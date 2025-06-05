@@ -2,92 +2,56 @@
 //  PhotoService.swift
 //  PhotoSwipe
 //
-//  Created by Developer on 2024/12/19.
+//  Created by Tim on 4/6/25.
 //
 
-import Foundation
+import SwiftUI
 import Photos
-import UIKit
 
-/// 照片服务类，负责相册访问和照片管理
-@MainActor
-class PhotoService: ObservableObject {
+@Observable
+class PhotoService {
+    var photos: [PhotoModel] = []
+    var isLoading = false
+    var authorizationStatus: PHAuthorizationStatus = .notDetermined
     
-    /// 请求相册访问权限
-    func requestPhotoLibraryPermission() async -> Bool {
-        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        
-        switch status {
-        case .authorized, .limited:
-            return true
-        case .denied, .restricted:
-            return false
-        case .notDetermined:
-            let newStatus = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
-            return newStatus == .authorized || newStatus == .limited
-        @unknown default:
-            return false
-        }
+    init() {
+        authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     }
     
-    /// 获取所有照片
-    func fetchAllPhotos() async -> [PhotoModel] {
-        return await withCheckedContinuation { continuation in
-            let fetchOptions = PHFetchOptions()
-            fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+    @MainActor
+    func requestPermission() async -> PHAuthorizationStatus {
+        let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        authorizationStatus = status
+        return status
+    }
+    
+    @MainActor
+    func loadPhotos() async {
+        isLoading = true
+        
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        
+        let assets = PHAsset.fetchAssets(with: fetchOptions)
+        
+        var newPhotos: [PhotoModel] = []
+        
+        assets.enumerateObjects { asset, _, _ in
+            let photoModel = PhotoModel(asset: asset)
             
-            let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
-            var photos: [PhotoModel] = []
-            
-            assets.enumerateObjects { asset, _, _ in
-                let photo = PhotoModel(asset: asset)
-                photos.append(photo)
+            // 检查历史记录并恢复状态
+            let identifier = asset.localIdentifier
+            if HistoryManager.shared.isPhotoDeleted(identifier) {
+                photoModel.isMarkedForDeletion = true
+            } else if HistoryManager.shared.isPhotoKept(identifier) {
+                photoModel.isKept = true
             }
             
-            continuation.resume(returning: photos)
+            newPhotos.append(photoModel)
         }
-    }
-    
-    /// 加载照片图像
-    func loadImage(for photo: PhotoModel, targetSize: CGSize = CGSize(width: 300, height: 400)) async {
-        let imageManager = PHImageManager.default()
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
-        options.isNetworkAccessAllowed = true
         
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            imageManager.requestImage(
-                for: photo.asset,
-                targetSize: targetSize,
-                contentMode: .aspectFill,
-                options: options
-            ) { image, _ in
-                DispatchQueue.main.async {
-                    photo.image = image
-                    continuation.resume()
-                }
-            }
-        }
-    }
-    
-    /// 批量删除照片
-    func deletePhotos(_ photos: [PhotoModel]) async -> Bool {
-        let assets = photos.map { $0.asset }
-        
-        return await withCheckedContinuation { continuation in
-            PHPhotoLibrary.shared().performChanges({
-                PHAssetChangeRequest.deleteAssets(assets as NSArray)
-            }) { success, error in
-                if let error = error {
-                    print("删除照片失败: \(error.localizedDescription)")
-                }
-                continuation.resume(returning: success)
-            }
-        }
-    }
-    
-    /// 检查相册访问权限状态
-    func checkPermissionStatus() -> PHAuthorizationStatus {
-        return PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        photos = newPhotos
+        isLoading = false
     }
 }
