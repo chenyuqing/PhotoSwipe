@@ -10,7 +10,8 @@ import Photos
 
 struct ContentView: View {
     @State private var viewModel = PhotoSwipeViewModel()
-    @State private var showingHistory = false
+    @State private var showingMarkedPhotosGrid = false
+    @State private var showingKeptPhotosGrid = false
     
     var body: some View {
         NavigationStack {
@@ -26,40 +27,83 @@ struct ContentView: View {
                 VStack(spacing: 20) {
                     // 顶部状态栏
                     HStack {
-                        VStack(alignment: .leading) {
-                            Text("PhotoSwipe")
-                                .font(.largeTitle)
-                                .fontWeight(.bold)
-                            
-                            if viewModel.photoService.isLoading {
-                                Text("加载中...")
-                                    .foregroundColor(.secondary)
-                            } else {
+                        // 照片索引和处理进度显示
+                        if viewModel.photoService.isLoading {
+                            Text("加载中...")
+                                .foregroundColor(.secondary)
+                        } else if !viewModel.photoService.photos.isEmpty {
+                            VStack(alignment: .leading, spacing: 2) {
                                 Text("\(viewModel.currentPhotoIndex + 1) / \(viewModel.photoService.photos.count)")
+                                    .foregroundColor(.secondary)
+                                
+                                Text("已处理: \(viewModel.processedPhotosCount) (删除:\(viewModel.markedPhotosCount), 保留:\(viewModel.keptPhotosCount))")
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                             }
                         }
                         
                         Spacer()
                         
-                        HStack(spacing: 12) {
-                            // 历史记录按钮
-                            Button {
-                                showingHistory = true
+                        // 管理按钮（整合历史记录功能）
+                        if viewModel.markedPhotosCount > 0 || viewModel.keptPhotosCount > 0 || viewModel.hasHistory() {
+                            Menu {
+                                // 查看待删除照片
+                                let markedCount = viewModel.markedPhotosCount
+                                if markedCount > 0 {
+                                    Button(action: {
+                                        showingMarkedPhotosGrid = true
+                                    }) {
+                                        Label("查看待删除照片 (\(markedCount))", systemImage: "trash.square")
+                                    }
+                                }
+                                
+                                // 查看保留照片
+                                let keptCount = viewModel.keptPhotosCount
+                                if keptCount > 0 {
+                                    Button(action: {
+                                        showingKeptPhotosGrid = true
+                                    }) {
+                                        Label("查看保留照片 (\(keptCount))", systemImage: "heart.square")
+                                    }
+                                }
+                                
+                                Divider()
+                                
+                                // 删除所有标记的照片
+                                if markedCount > 0 {
+                                    Button(action: viewModel.showDeleteConfirmation) {
+                                        Label("删除所有标记照片", systemImage: "trash")
+                                    }
+                                }
+                                
+                                // 清除所有标记
+                                if markedCount > 0 || keptCount > 0 {
+                                    Button(action: {
+                                        viewModel.clearAllMarks()
+                                        HistoryManager.shared.clearKeptPhotos()
+                                    }) {
+                                        Label("清除所有标记", systemImage: "xmark.circle")
+                                    }
+                                }
+                                
+                                // 历史记录统计
+                                let stats = viewModel.getExtendedHistoryStats()
+                                if stats.deletedCount > 0 || stats.keptCount > 0 {
+                                    Button(action: {
+                                        viewModel.clearAllRecords()
+                                    }) {
+                                        Label("清除所有记录", systemImage: "clock.arrow.circlepath")
+                                    }
+                                }
                             } label: {
-                                HStack {
-                                    Image(systemName: "clock")
+                                let totalCount = viewModel.markedPhotosCount + viewModel.keptPhotosCount
+                                VStack {
+                                    Image(systemName: "ellipsis.circle")
                                         .font(.title2)
-                                    if viewModel.hasHistoryData {
-                                        let stats = viewModel.getHistoryStats()
-                                        Text("\(stats.markedCount)")
+                                    if totalCount > 0 {
+                                        Text("\(totalCount)")
                                             .font(.caption)
                                             .fontWeight(.bold)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Color.orange)
-                                            .foregroundColor(.white)
-                                            .clipShape(Capsule())
                                     }
                                 }
                                 .foregroundColor(.blue)
@@ -68,83 +112,76 @@ struct ContentView: View {
                                 .cornerRadius(12)
                                 .shadow(radius: 2)
                             }
-                            
-                            // 删除按钮
-                            if viewModel.markedPhotosCount > 0 {
-                                Button(action: viewModel.showDeleteConfirmation) {
-                                    VStack {
-                                        Image(systemName: "trash")
-                                            .font(.title2)
-                                        Text("\(viewModel.markedPhotosCount)")
-                                            .fontWeight(.bold)
-                                    }
-                                    .foregroundColor(.red)
-                                    .padding()
-                                    .background(Color.white)
-                                    .cornerRadius(12)
-                                    .shadow(radius: 2)
-                                }
-                            }
                         }
                     }
                     .padding(.horizontal)
                     
                     Spacer()
                     
-                    // 主要内容区域
-                    if viewModel.photoService.authorizationStatus == .denied || viewModel.photoService.authorizationStatus == .restricted {
-                        PermissionDeniedView()
-                    } else if viewModel.photoService.isLoading {
-                        LoadingView()
-                    } else if viewModel.photoService.photos.isEmpty {
-                        EmptyPhotosView()
-                    } else if let currentPhoto = viewModel.currentPhoto {
-                        SwipeablePhotoCard(
-                            photo: currentPhoto,
-                            onSwipeLeft: viewModel.swipeLeft,
-                            onSwipeRight: viewModel.swipeRight
-                        )
-                    }
-                    
-                    Spacer()
-                    
-                    // 底部控制按钮
-                    if !viewModel.photoService.photos.isEmpty && !viewModel.photoService.isLoading {
-                        HStack(spacing: 40) {
-                            // 不喜欢按钮
-                            Button(action: viewModel.swipeRight) {
-                                Image(systemName: "xmark")
-                                    .font(.title)
-                                    .foregroundColor(.white)
-                                    .frame(width: 60, height: 60)
-                                    .background(Color.red)
-                                    .clipShape(Circle())
-                                    .shadow(radius: 4)
-                            }
-                            
-                            // 撤销按钮
-                            Button(action: viewModel.resetCurrentPhotoMark) {
-                                Image(systemName: "arrow.uturn.left")
-                                    .font(.title2)
-                                    .foregroundColor(.white)
-                                    .frame(width: 50, height: 50)
-                                    .background(Color.orange)
-                                    .clipShape(Circle())
-                                    .shadow(radius: 4)
-                            }
-                            
-                            // 喜欢按钮
-                            Button(action: viewModel.swipeLeft) {
-                                Image(systemName: "heart.fill")
-                                    .font(.title)
-                                    .foregroundColor(.white)
-                                    .frame(width: 60, height: 60)
-                                    .background(Color.green)
-                                    .clipShape(Circle())
-                                    .shadow(radius: 4)
+                    // 主要内容区域 - 扩展到全屏
+                    ZStack {
+                        if viewModel.photoService.authorizationStatus == .denied || viewModel.photoService.authorizationStatus == .restricted {
+                            PermissionDeniedView()
+                        } else if viewModel.photoService.isLoading {
+                            LoadingView()
+                        } else if viewModel.photoService.photos.isEmpty {
+                            EmptyPhotosView()
+                        } else if let currentPhoto = viewModel.currentPhoto {
+                            SwipeablePhotoCard(
+                                photo: currentPhoto,
+                                onSwipeLeft: viewModel.swipeLeft,
+                                onSwipeRight: viewModel.swipeRight
+                            )
+                        }
+                        
+                        // 底部控制按钮 - 悬浮在图片上方
+                        if !viewModel.photoService.photos.isEmpty && !viewModel.photoService.isLoading {
+                            VStack {
+                                Spacer()
+                                
+                                HStack(spacing: 60) {
+                                    // 删除按钮
+                                    Button(action: {
+                                        viewModel.swipeRight()
+                                    }) {
+                                        Image(systemName: "xmark")
+                                            .font(.title)
+                                            .foregroundColor(.red)
+                                            .frame(width: 50, height: 50)
+                                            .background(Color.white.opacity(0.9))
+                                            .cornerRadius(25)
+                                            .shadow(radius: 4)
+                                    }
+                                    
+                                    // 撤销按钮
+                                    Button(action: {
+                                        viewModel.resetCurrentPhotoMark()
+                                    }) {
+                                        Image(systemName: "arrow.uturn.left")
+                                            .font(.title2)
+                                            .foregroundColor(.gray)
+                                            .frame(width: 45, height: 45)
+                                            .background(Color.white.opacity(0.9))
+                                            .cornerRadius(22.5)
+                                            .shadow(radius: 4)
+                                    }
+                                    
+                                    // 保留按钮
+                                    Button(action: {
+                                        viewModel.swipeLeft()
+                                    }) {
+                                        Image(systemName: "heart")
+                                            .font(.title)
+                                            .foregroundColor(.green)
+                                            .frame(width: 50, height: 50)
+                                            .background(Color.white.opacity(0.9))
+                                            .cornerRadius(25)
+                                            .shadow(radius: 4)
+                                    }
+                                }
+                                .padding(.bottom, 50)
                             }
                         }
-                        .padding(.bottom)
                     }
                 }
             }
@@ -173,8 +210,11 @@ struct ContentView: View {
             } message: {
                 Text("确定要删除 \(viewModel.markedPhotosCount) 张标记的照片吗？此操作无法撤销。")
             }
-            .sheet(isPresented: $showingHistory) {
-                HistoryView(viewModel: viewModel)
+            .sheet(isPresented: $showingMarkedPhotosGrid) {
+                MarkedPhotosGridView(viewModel: viewModel)
+            }
+            .sheet(isPresented: $showingKeptPhotosGrid) {
+                KeptPhotosGridView(viewModel: viewModel)
             }
         }
     }
